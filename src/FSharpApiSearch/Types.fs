@@ -1,22 +1,25 @@
 ﻿namespace FSharpApiSearch
 
-type NameItem =
-  | Global
-  | Item of name: string * genericParameters: string list
+type NameItem = {
+  DisplayName: string
+  // CompiledName: string
+  GenericParameterCount: int
+}
 
 type FullName = string
 type FriendlyName = NameItem list
 
+[<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
+module FriendlyName =
+  let ofString (name: string) = name.Split('.') |> Seq.map (fun n -> { DisplayName = n; GenericParameterCount = 0 }) |> Seq.toList |> List.rev
+
 type Name =
-  | FullName of FullName
-  | FriendlyName of NameItem list
+  | LoadingName of FullName * FriendlyName
+  | FriendlyName of FriendlyName
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module Name =
-  let friendlyNameOfString (name: string) =
-    Global :: (name.Split('.') |> Seq.map (fun n -> NameItem.Item (n, [])) |> Seq.toList)
-    |> List.rev
-    |> FriendlyName
+  let friendlyNameOfString (name: string) = FriendlyName (FriendlyName.ofString name)
 
   let fullNameError() = failwith "FullName at run time is invalid data."
 
@@ -98,7 +101,7 @@ type ConstraintStatus =
   | Dependence of TypeVariable list
 
 type FullTypeDefinition = {
-  Name: Name
+  Name: FriendlyName
   FullName: FullName
   AssemblyName: string
   BaseType: LowType option
@@ -120,7 +123,7 @@ type FullTypeDefinition = {
   Comparison: ConstraintStatus
 }
 with
-  member this.FullIdentity = { AssemblyName = this.AssemblyName; Name = this.Name; GenericParameterCount = this.GenericParameters.Length }
+  member this.FullIdentity = { AssemblyName = this.AssemblyName; Name = FriendlyName this.Name; GenericParameterCount = this.GenericParameters.Length }
 
 type TypeAbbreviationDefinition = {
   Abbreviation: LowType
@@ -316,13 +319,13 @@ module SpecialTypes =
           | FullIdentity { Name = FriendlyName name }
           | PartialIdentity { Name = name } ->
             match name with
-            | Item (name, [ _ ]) :: _ ->
+            | { DisplayName = name; GenericParameterCount = 1 } :: _ ->
               if Regex.IsMatch(name, arrayRegexPattern) then
                 Some (name, elem)
               else
                 None
             | _ -> None
-          | FullIdentity { Name = FullName _ } -> Name.fullNameError()
+          | FullIdentity { Name = LoadingName _ } -> Name.fullNameError()
         | _ -> None
       let (|NonTuple|_|) x =
         match x with
@@ -358,12 +361,14 @@ module internal Print =
     | ApiKind.ExtensionMember -> "extension member"
 
   let printFriendlyName = function
-    | Global :: _ -> "global"
-    | Item (n, _) :: _ -> n
+    | { NameItem.DisplayName = n } :: _ -> n
     | [] -> "<empty>"
 
   let printName = function
-    | FullName n -> n
+    | LoadingName (n1, n2) ->
+      match n2 with
+      | [] -> n1
+      | n2 -> n1 + "." + printFriendlyName n2
     | FriendlyName n -> printFriendlyName n
 
   let printIdentity = function
@@ -455,8 +460,8 @@ module internal Print =
     
   let printFullTypeDefinition isDebug (x: FullTypeDefinition) =
     match x.GenericParameters with
-    | [] -> sprintf "%s.%s" x.AssemblyName (printName x.Name)
-    | args -> sprintf "%s.%s<%s>" x.AssemblyName (printName x.Name) (args |> Seq.map (printVariable isDebug VariableSource.Target) |> String.concat ", ")
+    | [] -> sprintf "%s.%s" x.AssemblyName (printFriendlyName x.Name)
+    | args -> sprintf "%s.%s<%s>" x.AssemblyName (printFriendlyName x.Name) (args |> Seq.map (printVariable isDebug VariableSource.Target) |> String.concat ", ")
 
   let printApiSignature isDebug = function
     | ApiSignature.ModuleValue t -> printLowType isDebug t
@@ -506,12 +511,7 @@ type Api with
 
 [<CompilationRepresentation(CompilationRepresentationFlags.ModuleSuffix)>]
 module Identity =
-  let private testFriendlyName (xs: FriendlyName) (ys: FriendlyName) =
-    Seq.zip xs ys
-    |> Seq.forall (function
-      | Global, _ -> true
-      | _, Global -> true
-      | Item (xname, xparams), Item (yname, yparams) -> xname = yname && xparams.Length = yparams.Length)
+  let private testFriendlyName (xs: FriendlyName) (ys: FriendlyName) = Seq.zip xs ys |> Seq.forall (fun (x, y) -> x = y)
 
   let sameName x y =
     match x, y with
@@ -522,7 +522,7 @@ module Identity =
       | FriendlyName fullname ->
         full.GenericParameterCount = partial.GenericParameterCount
         && testFriendlyName fullname partial.Name
-      | FullName _ -> Name.fullNameError()
+      | LoadingName _ -> Name.fullNameError()
     | PartialIdentity left, PartialIdentity right ->
       left.GenericParameterCount = right.GenericParameterCount
       && testFriendlyName left.Name right.Name
