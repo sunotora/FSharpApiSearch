@@ -356,10 +356,9 @@ module NameMatcher =
   let test query (api: Api) ctx =
     match query with
     | QueryMethod.ByName (expectedName, _) ->
-      if expectedName = api.Name.Head then
-        Matched ctx
-      else
-        Failure
+      match api.Name with
+      | FriendlyName (actualName :: _) when expectedName = actualName.DisplayName -> Matched ctx
+      | _ -> Failure
     | _ -> Matched ctx
   let instance (_: SearchOptions) =
     { new IApiMatcher with
@@ -1041,5 +1040,5 @@ let search (dictionaries: ApiDictionary[]) (options: SearchOptions) (targets: Ap
     match test lowTypeMatcher apiMatchers query initialContext api with
     | Matched ctx -> Some { Distance = ctx.Distance; Api = api }
     | _ -> None)
-  |> Seq.sortBy (fun x -> (x.Distance, ReverseName.toString x.Api.Name))
+  |> Seq.sortBy (fun x -> (x.Distance, "not implemented"))
   |> Seq.cache
